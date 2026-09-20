@@ -68,8 +68,20 @@ const osThreadAttr_t myTask02_attributes = {
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityHigh7,
 };
+/* Definitions for myTask03 */
+osThreadId_t myTask03Handle;
+const osThreadAttr_t myTask03_attributes = {
+  .name = "myTask03",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityHigh7,
+};
 /* USER CODE BEGIN PV */
+osSemaphoreId_t myBinarySem01Handle;
+osSemaphoreId_t myBinarySem02Handle;
 
+osMutexId_t myMutex01Handle;
+
+osTimerId_t myTimer01Handle;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -84,9 +96,10 @@ static void MX_USART3_UART_Init(void);
 static void MX_USB_OTG_FS_PCD_Init(void);
 void StartDefaultTask(void *argument);
 void StartTask02(void *argument);
+void StartTask03(void *argument);
 
 /* USER CODE BEGIN PFP */
-
+void Timer01_Callback(void *argument);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -98,6 +111,8 @@ void StartTask02(void *argument);
   * @brief  The application entry point.
   * @retval int
   */
+
+
 int main(void)
 {
 
@@ -139,14 +154,19 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_MUTEX */
   /* add mutexes, ... */
+  myMutex01Handle = osMutexNew(NULL);
   /* USER CODE END RTOS_MUTEX */
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
+  myBinarySem01Handle = osSemaphoreNew(1, 0, NULL);
+  myBinarySem02Handle = osSemaphoreNew(1, 0, NULL);
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
   /* start timers, add new ones, ... */
+  myTimer01Handle = osTimerNew(Timer01_Callback, osTimerPeriodic, NULL, NULL);
+  osTimerStart(myTimer01Handle, 10000);
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
@@ -159,6 +179,9 @@ int main(void)
 
   /* creation of myTask02 */
   myTask02Handle = osThreadNew(StartTask02, NULL, &myTask02_attributes);
+
+  /* creation of myTask03 */
+  myTask03Handle = osThreadNew(StartTask03, NULL, &myTask03_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
@@ -707,9 +730,25 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
   if (GPIO_Pin == GPIO_PIN_13)
   {
-    HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+    // for (int i = 0; i < 5; i++)
+    // {
+    //   HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+    //   osDelay(500);
+    //   HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+    //   osDelay(500);
+    // }
+
+    osSemaphoreRelease(myBinarySem01Handle);
+    
+    
   }
  
+}
+
+void Timer01_Callback(void *argument)
+{
+  // HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+  osSemaphoreRelease(myBinarySem02Handle);
 }
 
 /* USER CODE END 4 */
@@ -727,8 +766,21 @@ void StartDefaultTask(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    HAL_GPIO_TogglePin(GPIOC, LED3_WIFI__LED4_BLE_Pin);
-    osDelay(1000);
+    
+    osSemaphoreAcquire(myBinarySem02Handle, osWaitForever);
+    for(int i = 0; i < 20; i++)
+    {
+      osMutexAcquire(myMutex01Handle, osWaitForever);
+      HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+      osMutexRelease(myMutex01Handle);
+      osDelay(50);
+      osMutexAcquire(myMutex01Handle, osWaitForever);
+      HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+      osMutexRelease(myMutex01Handle);
+      osDelay(50);
+    }
+    
+
     //HAL_Delay(1000);
   }
   /* USER CODE END 5 */
@@ -747,10 +799,37 @@ void StartTask02(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+    // HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
     osDelay(1000);
   }
   /* USER CODE END StartTask02 */
+}
+
+/* USER CODE BEGIN Header_StartTask03 */
+/**
+* @brief Function implementing the myTask03 thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartTask03 */
+void StartTask03(void *argument)
+{
+  /* USER CODE BEGIN StartTask03 */
+  /* Infinite loop */
+  for(;;)
+  {
+    osSemaphoreAcquire(myBinarySem01Handle, osWaitForever);
+    osMutexAcquire(myMutex01Handle, osWaitForever);
+    for (int i =0;i <5; i++)
+    {
+      HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+      osDelay(500);
+      HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+      osDelay(500);
+    }
+    osMutexRelease(myMutex01Handle);
+  }
+  /* USER CODE END StartTask03 */
 }
 
 /**
