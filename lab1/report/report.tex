@@ -1,0 +1,550 @@
+% Embedded Systems lab report -- compile with pdflatex (twice, for the ToC)
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{lmodern}      % scalable Type1 fonts for T1; without this,
+\usepackage[T1]{fontenc}  % MiKTeX builds slow, fuzzy METAFONT bitmaps
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[hidelinks]{hyperref}
+
+% --- C code listing style -------------------------------------------------
+\definecolor{codegray}{gray}{0.96}
+\definecolor{codegreen}{rgb}{0.0,0.5,0.0}
+\definecolor{codeblue}{rgb}{0.0,0.0,0.6}
+
+\lstdefinestyle{cstyle}{
+  language=C,
+  backgroundcolor=\color{codegray},
+  basicstyle=\ttfamily\footnotesize,
+  keywordstyle=\color{codeblue}\bfseries,
+  commentstyle=\color{codegreen}\itshape,
+  stringstyle=\color{red!70!black},
+  numbers=left,
+  numberstyle=\tiny\color{gray},
+  numbersep=8pt,
+  breaklines=true,
+  frame=single,
+  framerule=0pt,
+  showstringspaces=false,
+  tabsize=2,
+  captionpos=b,
+}
+\lstset{style=cstyle}
+
+% --- Title ----------------------------------------------------------------
+% >>> FILL THIS IN <<<
+\newcommand{\studentid}{R12942157}
+
+\title{Embedded Systems Laboratory Report\\
+       \large FreeRTOS Task Synchronisation on the B-L475E-IOT01A\\
+       \normalsize Basic Problem and Option Problem A}
+\author{YU-CHEN, CHU\\
+        \normalsize Student ID: \studentid}
+\date{\today\\[2ex]
+      \normalsize Source code:
+      \url{https://github.com/oldpig123/embedded_system/tree/master/lab1}}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\newpage
+
+% =========================================================================
+\section{Introduction}
+
+The purpose of this exercise was to implement two independent blinking
+behaviours on a single LED, each driven by its own FreeRTOS task, and to
+coordinate them so that the two behaviours never interfere with one another.
+Because both tasks manipulate the same physical output pin, the exercise is
+fundamentally about \emph{synchronisation}: deciding which task is allowed to
+drive the LED at any given moment, and how an asynchronous external event
+(a button press, or a periodic timer expiry) is communicated to the task that
+should react to it.
+
+Two related but distinct mechanisms are used throughout. A \emph{binary
+semaphore} and a \emph{message queue} are used for \emph{signalling}: telling a
+sleeping task that an event has occurred. A \emph{mutex} is used for
+\emph{mutual exclusion}: guaranteeing that only one task drives the shared LED
+at a time. Distinguishing these two roles turned out to be the central
+conceptual lesson of the exercise.
+
+The extension (Option Problem A) adds the requirement that the button
+distinguish a normal press from a long press, which forces the signalling
+mechanism to carry \emph{data} rather than a bare notification, and therefore
+replaces the semaphore with a message queue.
+
+% =========================================================================
+\section{Development Environment}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{ll}
+\toprule
+Item & Detail \\
+\midrule
+Board            & B-L475E-IOT01A Discovery kit \\
+MCU              & STM32L475VG (ARM Cortex-M4F) \\
+RTOS             & FreeRTOS, accessed through the CMSIS-RTOS v2 API \\
+Code generation  & STM32CubeMX \\
+Toolchain        & \texttt{arm-none-eabi-gcc}, CMake build \\
+Indicator        & LED2 on PB14 \\
+Input            & User button on PC13, via EXTI line 13 \\
+\bottomrule
+\end{tabular}
+\caption{Development environment.}
+\end{table}
+
+All RTOS objects are created with the CMSIS-RTOS v2 API
+(\texttt{osThreadNew}, \texttt{osSemaphoreNew}, \texttt{osMutexNew},
+\texttt{osTimerNew}, \texttt{osMessageQueueNew}) rather than calling the
+underlying FreeRTOS functions directly.
+
+% =========================================================================
+\section{Basic Problem}
+
+\subsection{Requirements}
+
+Two tasks share LED2 and must not interfere with each other:
+
+\begin{itemize}
+  \item \textbf{Task\_1} --- pressing the user button triggers LED2 to blink for
+        5\,s at 1\,Hz. The EXTI interrupt handler detects the press and informs
+        Task\_1 through a binary semaphore.
+  \item \textbf{Task\_2} --- LED2 blinks for 2\,s at 10\,Hz, repeating every
+        10\,s. A timer interrupt detects the time-up event and informs Task\_2
+        through a second binary semaphore.
+\end{itemize}
+
+A mutex or semaphore must protect the blinking procedures so that while one
+blinking sequence is in progress, the other waits.
+
+\subsection{System Architecture}
+
+Both tasks follow the same three-stage pattern:
+
+\begin{center}
+\texttt{external event} $\rightarrow$ \texttt{ISR / callback} $\rightarrow$
+\texttt{signalling object} $\rightarrow$ \texttt{task performs blinking}
+\end{center}
+
+The interrupt or callback performs no work beyond signalling; all timing and
+GPIO manipulation happens in task context. This separation is essential,
+because delaying inside an interrupt handler is either unsafe or ineffective
+(Section~\ref{sec:problems}).
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lllll}
+\toprule
+Role & Function & Priority & Trigger & Blink pattern \\
+\midrule
+Task\_1 & \texttt{StartTask03}      & \texttt{osPriorityHigh7} & EXTI13 ISR        & 5\,s @ 1\,Hz \\
+Task\_2 & \texttt{StartDefaultTask} & \texttt{osPriorityNormal}& periodic RTOS timer & 2\,s @ 10\,Hz \\
+\bottomrule
+\end{tabular}
+\caption{Task structure. A third thread, \texttt{StartTask02}, remains from an
+earlier exercise and is idle.}
+\end{table}
+
+\subsection{Synchronisation Objects}
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lll}
+\toprule
+Object & Creation & Purpose \\
+\midrule
+\texttt{myMutex01Handle}      & \texttt{osMutexNew(NULL)}                  & protects LED2 \\
+\texttt{myBinarySem02Handle}  & \texttt{osSemaphoreNew(1, 0, NULL)}        & timer $\rightarrow$ Task\_2 \\
+\texttt{myTimer01Handle}      & \texttt{osTimerNew(\ldots, osTimerPeriodic, \ldots)} & 10\,s periodic tick \\
+\texttt{myQueue01Handle}      & \texttt{osMessageQueueNew(16, sizeof(uint32\_t), NULL)} & ISR $\rightarrow$ Task\_1 \\
+\bottomrule
+\end{tabular}
+\caption{RTOS objects. The queue replaces Task\_1's binary semaphore in
+Option Problem A.}
+\end{table}
+
+All objects are created in \texttt{main()} after \texttt{osKernelInitialize()}
+and before \texttt{osKernelStart()}. Both semaphores are created with an
+initial count of zero, so that the waiting task genuinely blocks until a real
+event occurs rather than passing through immediately on its first attempt.
+
+\subsection{Timing Design}
+
+A blink of frequency $f$ has period $T = 1/f$, and a 50\,\% duty cycle is
+obtained by toggling the pin every $T/2$. The number of loop iterations
+required for a total duration $D$ is therefore $N = D/T$.
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lllll}
+\toprule
+Sequence & Frequency & Half period & Duration & Iterations \\
+\midrule
+Task\_2 burst          & 10\,Hz & 50\,ms  & 2\,s & 20 \\
+Task\_1 normal press   & 1\,Hz  & 500\,ms & 5\,s & 5 \\
+Task\_1 long press     & 10\,Hz & 50\,ms  & 5\,s & 50 \\
+\bottomrule
+\end{tabular}
+\caption{Blink timing parameters.}
+\end{table}
+
+Each loop iteration contains two toggles and two delays, so one iteration
+corresponds to one full on/off cycle.
+
+\subsection{Implementation}
+
+The timer callback does nothing but release the semaphore that Task\_2 is
+waiting on:
+
+\begin{lstlisting}[caption={Periodic timer callback signalling Task\_2.}]
+void Timer01_Callback(void *argument)
+{
+  osSemaphoreRelease(myBinarySem02Handle);
+}
+\end{lstlisting}
+
+Task\_2 blocks on that semaphore and performs its burst when signalled. Note
+that the mutex is acquired and released around each individual toggle rather
+than around the whole burst; the reason is discussed in
+Section~\ref{sec:granularity}.
+
+\begin{lstlisting}[caption={Task\_2: 2\,s at 10\,Hz, triggered by the timer.}]
+void StartDefaultTask(void *argument)
+{
+  for(;;)
+  {
+    osSemaphoreAcquire(myBinarySem02Handle, osWaitForever);
+    for(int i = 0; i < 20; i++)
+    {
+      osMutexAcquire(myMutex01Handle, osWaitForever);
+      HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+      osMutexRelease(myMutex01Handle);
+      osDelay(50);
+      osMutexAcquire(myMutex01Handle, osWaitForever);
+      HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+      osMutexRelease(myMutex01Handle);
+      osDelay(50);
+    }
+  }
+}
+\end{lstlisting}
+
+Because the task no longer performs its own inter-burst delay, the 10-second
+period is governed entirely by the timer. The task simply returns to blocking
+on the semaphore as soon as a burst finishes.
+
+\subsection{Results}
+
+The observed behaviour is a 2-second burst of fast blinking followed by
+8 seconds of darkness, repeating indefinitely --- a 10-second period, as
+required.
+
+One initially surprising detail is that nothing happens for the first
+10 seconds after reset. This is correct: the periodic timer starts counting
+when \texttt{osTimerStart()} executes, so its first expiry occurs a full period
+later. Until then Task\_2 is blocked on a semaphore whose count is zero.
+Should an immediate first burst be desired, releasing the semaphore once
+manually before \texttt{osKernelStart()} would shift the phase without altering
+the period.
+
+% =========================================================================
+\section{Option Problem A: Long Press Detection}
+
+\subsection{Requirements}
+
+The button must distinguish two events: a normal press, and a long press in
+which the button is held for more than one second. A normal press produces the
+original 5\,s at 1\,Hz blink; a long press produces a 5\,s at 10\,Hz blink.
+Because Task\_1 must now be told \emph{which} of two events occurred, the
+specification requires a message queue rather than a binary semaphore.
+
+\subsection{Detecting Press Duration}
+
+Measuring how long a button is held requires knowing both when it was pressed
+and when it was released. The original configuration generated an interrupt
+only on the falling edge, so the release was invisible to software. The EXTI
+configuration for PC13 was therefore changed from
+\texttt{GPIO\_MODE\_IT\_FALLING} to \texttt{GPIO\_MODE\_IT\_RISING\_FALLING}
+in STM32CubeMX and the project regenerated.
+
+With both edges enabled the same callback fires twice per press, so the two
+cases must be told apart by reading the current pin level. The button is
+active low, so a level of \texttt{GPIO\_PIN\_RESET} means the press has just
+occurred and \texttt{GPIO\_PIN\_SET} means the button has just been released.
+On press, the current tick is recorded; on release, the elapsed time is
+compared against the one-second threshold and the corresponding message is
+posted to the queue.
+
+The timestamp must survive between two separate invocations of the interrupt
+handler, so it is a file-scope \texttt{volatile} variable rather than a local.
+
+\subsection{Why a Queue Rather Than a Semaphore}
+
+A binary semaphore carries no payload. It can only communicate the fact that
+\emph{something} happened, which is sufficient when there is exactly one kind
+of event. Once the button can produce two distinguishable events, the
+signalling mechanism must carry a value. A message queue provides exactly
+this: the interrupt posts a value, and the receiving task both blocks until a
+message arrives and learns which event it was. The queue therefore subsumes
+the semaphore's role, and Task\_1's binary semaphore was removed entirely.
+
+\subsection{Implementation}
+
+\begin{lstlisting}[caption={EXTI callback: classifying press duration and posting a message.}]
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  if (GPIO_Pin == GPIO_PIN_13)
+  {
+    if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET)
+    {
+      /* falling edge: button pressed, record the time */
+      button_press_time = HAL_GetTick();
+    }
+    else
+    {
+      /* rising edge: button released, classify the press */
+      if (HAL_GetTick() - button_press_time >= 1000)
+      {
+        uint32_t message = 1;   /* long press  */
+        osMessageQueuePut(myQueue01Handle, &message, 0, 0);
+      }
+      else
+      {
+        uint32_t message = 0;   /* short press */
+        osMessageQueuePut(myQueue01Handle, &message, 0, 0);
+      }
+    }
+  }
+}
+\end{lstlisting}
+
+The final argument of \texttt{osMessageQueuePut()} is the timeout, and it must
+be zero when the function is called from interrupt context. The CMSIS-RTOS v2
+wrapper detects that it is running inside an interrupt and rejects any
+non-zero timeout outright, because an interrupt handler cannot block.
+
+Task\_1 blocks on the queue and selects its blinking pattern from the received
+value:
+
+\begin{lstlisting}[caption={Task\_1: selecting a blink pattern from the queue message.}]
+void StartTask03(void *argument)
+{
+  for(;;)
+  {
+    uint32_t message;
+    osMessageQueueGet(myQueue01Handle, &message, NULL, osWaitForever);
+
+    if (message == 1)          /* long press: 5 s at 10 Hz */
+    {
+      osMutexAcquire(myMutex01Handle, osWaitForever);
+      for (int i = 0; i < 50; i++)
+      {
+        HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+        osDelay(50);
+        HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+        osDelay(50);
+      }
+      osMutexRelease(myMutex01Handle);
+    }
+    else                       /* normal press: 5 s at 1 Hz */
+    {
+      osMutexAcquire(myMutex01Handle, osWaitForever);
+      for (int i = 0; i < 5; i++)
+      {
+        HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+        osDelay(500);
+        HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+        osDelay(500);
+      }
+      osMutexRelease(myMutex01Handle);
+    }
+  }
+}
+\end{lstlisting}
+
+\subsection{Results}
+
+A short press produces five slow blinks over five seconds; holding the button
+for more than one second and then releasing produces fifty fast blinks over
+the same five seconds. In both cases the periodic background burst from
+Task\_2 is correctly excluded for the duration of the sequence.
+
+One known limitation is that no debouncing is performed. Mechanical contact
+bounce can in principle generate spurious edge interrupts at the moment of
+press or release, which would corrupt a duration measurement. In practice the
+one-second threshold is long enough that misclassification was not observed,
+but a production implementation would filter the input, either in software or
+with an RC network.
+
+% =========================================================================
+\section{Problems Encountered}
+\label{sec:problems}
+
+The majority of the effort in this exercise went into diagnosing behaviour
+that appeared to be "nothing happening". Each case had a distinct cause, and
+together they illustrate most of the important constraints of programming
+under an RTOS.
+
+\subsection{A misspelled callback silently does nothing}
+
+The first version of the interrupt handler was named
+\texttt{HAL\_GPIO\_EXIT\_Callback} instead of
+\texttt{HAL\_GPIO\_EXTI\_Callback}. The code compiled and linked without any
+warning, but the button had no effect.
+
+The HAL declares its callbacks as \emph{weak} symbols with empty bodies, so
+that the application can override them simply by defining a function of the
+same name. A misspelled name does not override anything; it merely defines an
+unused function, and the empty default implementation continues to be called.
+The lesson is that a silent failure of this kind is characteristic of the weak
+symbol mechanism, and that callback names must be copied exactly.
+
+\subsection{Busy-waiting in a high-priority task starves everything below it}
+
+An early version used \texttt{HAL\_Delay()} inside both tasks. The
+higher-priority task blinked correctly while the lower-priority task never ran
+at all.
+
+\texttt{HAL\_Delay()} does not block in the RTOS sense: it spins in a loop
+polling \texttt{HAL\_GetTick()} and therefore remains permanently
+\emph{runnable}. Under a preemptive priority scheduler, a runnable
+high-priority task is always selected over a lower-priority one, so the
+lower-priority task is never scheduled. Replacing \texttt{HAL\_Delay()} with
+\texttt{osDelay()} fixed this: \texttt{osDelay()} moves the calling task into
+the blocked state, allowing the scheduler to run other tasks during the delay.
+
+\subsection{\texttt{HAL\_Delay()} inside an interrupt handler deadlocks}
+
+A later attempt performed the blinking loop directly inside the EXTI callback
+using \texttt{HAL\_Delay()}. Pressing the button caused the LED to switch on
+and freeze permanently.
+
+The cause is an interaction between interrupt priorities. The EXTI interrupt
+is configured at NVIC priority 5, whereas the SysTick interrupt that
+increments the HAL tick runs at priority 15 --- a lower priority on Cortex-M,
+where a numerically larger value is less urgent. While the EXTI handler is
+executing, SysTick cannot preempt it, so \texttt{HAL\_GetTick()} never
+advances. \texttt{HAL\_Delay()} waits for a tick value that can only be
+produced by an interrupt it is itself blocking: a deadlock.
+
+\subsection{\texttt{osDelay()} inside an interrupt handler is a silent no-op}
+
+Replacing \texttt{HAL\_Delay()} with \texttt{osDelay()} in the same handler
+removed the freeze but produced no visible blinking at all.
+
+Inspection of the CMSIS-RTOS v2 wrapper shows that \texttt{osDelay()} begins by
+testing whether it is executing in interrupt context, and if so returns
+\texttt{osErrorISR} immediately without delaying. Every delay in the loop
+therefore became a no-op, the ten toggles executed within a few microseconds,
+and since ten is an even number the LED finished in the state it started in.
+Blocking operations simply cannot be performed in an ISR, regardless of which
+API is used.
+
+Taken together, the two previous problems establish the rule that an interrupt
+handler must only \emph{signal} a task and return, never perform timed work
+itself.
+
+\subsection{A FreeRTOS task function must never return}
+
+While restructuring the code, one task body was temporarily commented out,
+including its enclosing \texttt{for(;;)} loop. The whole system stopped
+responding.
+
+A task function is not an ordinary function that the scheduler calls
+repeatedly; it is an entry point that must never return. When it does,
+execution continues into whatever instructions follow it in memory, which in
+this case caused a fault and left the CPU spinning in the default
+\texttt{HardFault\_Handler}, halting every task. Because the affected task had
+the highest priority, it was scheduled first and the system failed almost
+immediately after \texttt{osKernelStart()}.
+
+A related misconception is worth recording: calling a task's function by name
+from an interrupt handler does not start that task. It executes the function
+inline, in interrupt context, on the interrupt's stack --- and if the function
+contains an infinite loop, the handler never returns at all.
+
+% =========================================================================
+\section{Design Discussion}
+
+\subsection{Signalling and mutual exclusion are different problems}
+
+It is tempting to treat semaphores and mutexes as interchangeable, since both
+can be used to make a task wait. They solve different problems. The semaphore
+(or queue) answers \emph{``has an event occurred?''} and is signalled by one
+party and consumed by another. The mutex answers \emph{``may I touch the
+shared resource?''} and is always released by the same task that acquired it.
+This design needs both, for different reasons, and the two cannot be merged
+without losing one of the guarantees.
+
+An alternative to the mutex would have been a plain \texttt{volatile} flag
+checked before each toggle. This works for a single boolean on Cortex-M, where
+aligned word accesses are atomic, but it requires the other task to poll the
+flag rather than block, and it offers no protection for anything more complex
+than a single variable. The mutex expresses the intent directly and lets the
+RTOS handle the blocking.
+
+\subsection{Mutex granularity determines takeover latency}
+\label{sec:granularity}
+
+A mutex provides mutual exclusion, not preemption. It cannot interrupt a task
+that already holds the lock; a waiting task can only be admitted once the
+holder releases. The consequence is that the \emph{size of the critical
+section} directly determines how quickly one task can take over from another.
+
+In the first implementation, Task\_2 acquired the mutex once and held it for
+its entire 2-second burst. A button press arriving early in that burst had to
+wait up to two full seconds before Task\_1's sequence could begin, which was
+clearly visible as a delayed and apparently unresponsive button.
+
+Narrowing the critical section so that the mutex is held only around each
+individual \texttt{HAL\_GPIO\_TogglePin()} call, and released before the
+\texttt{osDelay()}, reduced the worst-case wait to approximately one toggle
+period (50\,ms) --- indistinguishable from instantaneous to a human observer.
+Task\_1 still holds the mutex for its whole sequence, so once it takes over it
+cannot be interrupted in turn.
+
+The resulting behaviour is best described as \emph{pause and resume}: Task\_2's
+loop counter is preserved while it waits for the mutex, so after Task\_1
+finishes, Task\_2 completes whatever remained of its interrupted burst rather
+than restarting. Discarding the remainder instead would require an explicit
+cancellation mechanism, such as a flag checked inside Task\_2's loop, which was
+judged unnecessary for this specification.
+
+\subsection{Sharing SysTick between the HAL and the RTOS}
+
+STM32CubeMX warns that when an RTOS is used, the HAL timebase should be moved
+off SysTick onto a separate hardware timer. The reason is that FreeRTOS takes
+over the SysTick interrupt for its own scheduling tick, while the HAL relies on
+the same interrupt to maintain \texttt{HAL\_GetTick()}. Inside a FreeRTOS
+critical section the tick interrupt may be delayed, so HAL timeouts and delays
+can measure time inaccurately. This project retains the default shared
+configuration, which is acceptable here because no HAL timing function is used
+after the scheduler starts, but it would be worth changing in any design that
+relies on HAL peripheral timeouts at runtime.
+
+% =========================================================================
+\section{Conclusion}
+
+Two tasks were implemented that drive the same LED with different blinking
+patterns, one triggered by an external interrupt and one by a periodic RTOS
+timer, with a mutex guaranteeing that the two sequences never overlap. The
+extension added press-duration measurement using both edges of the EXTI line
+and replaced the binary semaphore with a message queue, allowing a single task
+to select between two blinking patterns based on the value it receives.
+
+The most valuable outcome was not the final code but the set of failure modes
+encountered along the way. Each of them --- the unoverridden weak callback, the
+starvation caused by busy-waiting, the deadlock caused by delaying inside a
+high-priority interrupt, the silently ignored \texttt{osDelay()} in an ISR, and
+the task that returned --- reflects a specific property of how an RTOS
+schedules work. Collectively they reinforce a single design principle:
+interrupt handlers should capture events and defer all real work to tasks,
+which are the only context in which blocking, timing and resource arbitration
+can be performed correctly.
+
+\end{document}

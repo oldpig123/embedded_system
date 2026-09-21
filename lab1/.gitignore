@@ -1,5 +1,16 @@
 build
 mx.scratch
+
+# LaTeX build artifacts (report.pdf is kept)
+*.aux
+*.log
+*.out
+*.toc
+*.lof
+*.lot
+*.fls
+*.fdb_latexmk
+*.synctex.gz
 !.settings
 .clangd
 .settings
