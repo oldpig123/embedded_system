@@ -76,12 +76,16 @@ const osThreadAttr_t myTask03_attributes = {
   .priority = (osPriority_t) osPriorityHigh7,
 };
 /* USER CODE BEGIN PV */
-osSemaphoreId_t myBinarySem01Handle;
+// osSemaphoreId_t myBinarySem01Handle;
 osSemaphoreId_t myBinarySem02Handle;
 
 osMutexId_t myMutex01Handle;
 
 osTimerId_t myTimer01Handle;
+
+osMessageQueueId_t myQueue01Handle;
+// volatile uint32_t myQueue01Buffer[16];
+volatile uint32_t button_press_time = 0; // variable to store the time when the button is pressed
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -111,8 +115,6 @@ void Timer01_Callback(void *argument);
   * @brief  The application entry point.
   * @retval int
   */
-
-
 int main(void)
 {
 
@@ -159,7 +161,7 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
-  myBinarySem01Handle = osSemaphoreNew(1, 0, NULL);
+  // myBinarySem01Handle = osSemaphoreNew(1, 0, NULL);
   myBinarySem02Handle = osSemaphoreNew(1, 0, NULL);
   /* USER CODE END RTOS_SEMAPHORES */
 
@@ -171,6 +173,7 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_QUEUES */
   /* add queues, ... */
+  myQueue01Handle = osMessageQueueNew(16, sizeof(uint32_t), NULL);
   /* USER CODE END RTOS_QUEUES */
 
   /* Create the thread(s) */
@@ -590,7 +593,7 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : PC13 */
   GPIO_InitStruct.Pin = GPIO_PIN_13;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
@@ -738,7 +741,33 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     //   osDelay(500);
     // }
 
-    osSemaphoreRelease(myBinarySem01Handle);
+    if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_13) == GPIO_PIN_RESET)
+    {
+      // record the time when the button is pressed
+      button_press_time = HAL_GetTick();
+    }
+    else
+    {
+      //check if the button was press for more than 1 second
+      if (HAL_GetTick() - button_press_time >= 1000)
+      {
+        // button was pressed for more than 1 second
+        // put message in the queue
+        uint32_t message = 1; // example message
+        osMessageQueuePut(myQueue01Handle, &message, 0, 0);
+      }
+      else
+      {
+        // button was pressed for less than 1 second
+        // handle short press
+        // also put message in the queue
+        uint32_t message = 0; // example message
+        osMessageQueuePut(myQueue01Handle, &message, 0, 0);
+      }
+    }
+
+
+    //osSemaphoreRelease(myBinarySem01Handle);
     
     
   }
@@ -818,16 +847,46 @@ void StartTask03(void *argument)
   /* Infinite loop */
   for(;;)
   {
-    osSemaphoreAcquire(myBinarySem01Handle, osWaitForever);
-    osMutexAcquire(myMutex01Handle, osWaitForever);
-    for (int i =0;i <5; i++)
+    // osSemaphoreAcquire(myBinarySem01Handle, osWaitForever);
+    // osMutexAcquire(myMutex01Handle, osWaitForever);
+    // for (int i =0;i <5; i++)
+    // {
+    //   HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+    //   osDelay(500);
+    //   HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+    //   osDelay(500);
+    // }
+    // osMutexRelease(myMutex01Handle);
+
+    uint32_t message;
+    osMessageQueueGet(myQueue01Handle, &message, NULL, osWaitForever);
+    // long or short press
+    if (message == 1)
     {
-      HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
-      osDelay(500);
-      HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
-      osDelay(500);
+      // long press
+      osMutexAcquire(myMutex01Handle, osWaitForever);
+      for (int i = 0; i < 50; i++)
+      {
+        HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+        osDelay(50);
+        HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+        osDelay(50);
+      }
+      osMutexRelease(myMutex01Handle);
     }
-    osMutexRelease(myMutex01Handle);
+    else
+    {
+      // short press
+      osMutexAcquire(myMutex01Handle, osWaitForever);
+      for (int i = 0; i < 5; i++)
+      {
+        HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+        osDelay(500);
+        HAL_GPIO_TogglePin(GPIOB, LED2_Pin);
+        osDelay(500);
+      }
+      osMutexRelease(myMutex01Handle);
+    }
   }
   /* USER CODE END StartTask03 */
 }
