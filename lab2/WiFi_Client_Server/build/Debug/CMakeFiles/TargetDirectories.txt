@@ -1,3 +1,0 @@
-C:/Users/pig90/embedded_system/lab2/WiFi_Client_Server/build/Debug/CMakeFiles/WiFi_Client_Server.dir
-C:/Users/pig90/embedded_system/lab2/WiFi_Client_Server/build/Debug/CMakeFiles/edit_cache.dir
-C:/Users/pig90/embedded_system/lab2/WiFi_Client_Server/build/Debug/CMakeFiles/rebuild_cache.dir

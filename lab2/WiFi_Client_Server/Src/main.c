@@ -17,16 +17,20 @@
   */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "stm32l475e_iot01_accelero.h"
+#include "stm32l475e_iot01_gyro.h"
+#include "string.h"
+#include "stdio.h"
 
 /* Private defines -----------------------------------------------------------*/
 
 #define TERMINAL_USE
 
 /* Update SSID and PASSWORD with own Access point settings */
-#define SSID     "MySSID"
-#define PASSWORD "MyPasswd"
+#define SSID     "XXX"
+#define PASSWORD "XXX"
 
-uint8_t RemoteIP[] = {192,168,3,110};
+uint8_t RemoteIP[] = {192,168,00,XXX}; // 192.168.50.180
 #define RemotePORT	8002
 
 #define WIFI_WRITE_TIMEOUT 10000
@@ -76,6 +80,9 @@ int main(void)
   uint8_t  MAC_Addr[6] = {0};
   uint8_t  IP_Addr[4] = {0};
   uint8_t TxData[] = "STM32 : Hello!\n";
+  int16_t acc[3];
+  float gyro[3];
+  char buffer[64];
   int32_t Socket = -1;
   uint16_t Datalen;
   int32_t ret;
@@ -104,6 +111,10 @@ int main(void)
 
   BSP_COM_Init(COM1, &hDiscoUart);
 #endif /* TERMINAL_USE */
+
+  if (BSP_ACCELERO_Init() != ACCELERO_OK) { BSP_LED_On(LED2); TERMOUT("> ERROR : Cannot initialize Accelerometer\n"); }
+  if (BSP_GYRO_Init()     != GYRO_OK)     { BSP_LED_On(LED2); TERMOUT("> ERROR : Cannot initialize Gyroscope\n"); }
+
 
   TERMOUT("****** WIFI Module in TCP Client mode demonstration ****** \n\n");
   TERMOUT("TCP Client Instructions :\n");
@@ -190,27 +201,21 @@ int main(void)
   {
     if(Socket != -1)
     {
-      ret = WIFI_ReceiveData(Socket, RxData, sizeof(RxData)-1, &Datalen, WIFI_READ_TIMEOUT);
-      if(ret == WIFI_STATUS_OK)
-      {
-        if(Datalen > 0)
-        {
-          RxData[Datalen]=0;
-          TERMOUT("Received: %s\n",RxData);
-          ret = WIFI_SendData(Socket, TxData, sizeof(TxData), &Datalen, WIFI_WRITE_TIMEOUT);
-          if (ret != WIFI_STATUS_OK)
+
+      BSP_ACCELERO_AccGetXYZ(acc);
+      BSP_GYRO_GetXYZ(gyro);
+      snprintf(buffer, sizeof(buffer), "%d,%d,%d,%ld,%ld,%ld\n", acc[0], acc[1], acc[2], (int32_t)gyro[0], (int32_t)gyro[1], (int32_t)gyro[2]);
+      ret = WIFI_SendData(Socket, (uint8_t*)buffer, strlen(buffer), &Datalen, WIFI_WRITE_TIMEOUT);
+      if (ret != WIFI_STATUS_OK)
           {
             TERMOUT("> ERROR : Failed to Send Data, connection closed\n");
             break;
           }
-        }
-      }
-      else
-      {
-        TERMOUT("> ERROR : Failed to Receive Data, connection closed\n");
-        break;
-      }
+      HAL_Delay(10);
+
+          
     }
+    
   }
 }
 

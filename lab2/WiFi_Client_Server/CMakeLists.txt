@@ -31,11 +31,15 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/files.cmake)
 # Add sources to executable/library
 target_sources(${PROJECT_NAME} PRIVATE
   # User defined sources
+  "${CMAKE_CURRENT_SOURCE_DIR}/Drivers/BSP/B-L475E-IOT01/stm32l475e_iot01_accelero.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/Drivers/BSP/B-L475E-IOT01/stm32l475e_iot01_gyro.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/Drivers/BSP/Components/lsm6dsl/lsm6dsl.c"
 )
 
 # Add include directories
 target_include_directories(${PROJECT_NAME} PRIVATE
   # User defined include directories
+  "${CMAKE_CURRENT_SOURCE_DIR}/Drivers/BSP/Components/lsm6dsl"
 )
 
 # Compiler options

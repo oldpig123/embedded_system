@@ -1,4 +1,0 @@
-C:/Users/pig90/embedded_system/lab2/WiFi_Client_Server/Src/main.c:74:5:main	14
-C:/Users/pig90/embedded_system/lab2/WiFi_Client_Server/Src/main.c:279:1:__io_putchar	1
-C:/Users/pig90/embedded_system/lab2/WiFi_Client_Server/Src/main.c:314:6:HAL_GPIO_EXTI_Callback	2
-C:/Users/pig90/embedded_system/lab2/WiFi_Client_Server/Src/main.c:330:6:SPI3_IRQHandler	1
