@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+
+# LaTeX build artifacts (report.pdf is kept)
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.bbl
+*.blg
