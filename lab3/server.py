@@ -11,6 +11,9 @@ from winrt.windows.devices.bluetooth.genericattributeprofile import (
     GattServiceProvider,
     GattServiceProviderAdvertisingParameters,
 )
+from winrt.windows.storage.streams import DataWriter
+
+SEND_INTERVAL_S = 2
 
 SERVICE_UUID = uuid.UUID("0000fff0-0000-1000-8000-00805f9b34fb")
 CHAR_UUID = uuid.UUID("0000fff1-0000-1000-8000-00805f9b34fb")
@@ -31,16 +34,28 @@ async def main():
     params = GattLocalCharacteristicParameters()
     params.characteristic_properties = GattCharacteristicProperties.INDICATE
     char_result = await provider.service.create_characteristic_async(CHAR_UUID, params)
-    char_result.characteristic.add_subscribed_clients_changed(on_subscribed_clients_changed)
+    characteristic = char_result.characteristic
+    characteristic.add_subscribed_clients_changed(on_subscribed_clients_changed)
 
     adv = GattServiceProviderAdvertisingParameters()
     adv.is_discoverable = True
     adv.is_connectable = True
     provider.start_advertising_with_parameters(adv)
     print(f"Advertising service {SERVICE_UUID}. Ctrl+C to stop.", flush=True)
+    counter = 0
     try:
         while True:
-            await asyncio.sleep(1)
+            await asyncio.sleep(SEND_INTERVAL_S)
+            if len(characteristic.subscribed_clients) == 0:
+                continue
+            # Changing the value of a subscribed characteristic sends an indication.
+            counter += 1
+            value = f"value-{counter}".encode()
+            writer = DataWriter()
+            writer.write_bytes(value)
+            results = await characteristic.notify_value_async(writer.detach_buffer())
+            statuses = [str(r.status) for r in results]
+            print(f"[{time.strftime('%H:%M:%S')}] indicated {value!r} -> {statuses}", flush=True)
     finally:
         provider.stop_advertising()
 

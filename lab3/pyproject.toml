@@ -8,4 +8,5 @@ dependencies = [
     "winrt-windows-devices-bluetooth-genericattributeprofile>=3.2.1",
     "winrt-windows-foundation>=3.2.1",
     "winrt-windows-foundation-collections>=3.2.1",
+    "winrt-windows-storage-streams>=3.2.1",
 ]

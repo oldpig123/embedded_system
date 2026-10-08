@@ -6,7 +6,7 @@
 # Read it back and print it.
 # Disconnect in a finally.
 
-from bluepy.btle import Scanner, Peripheral, UUID, BTLEException
+from bluepy.btle import Scanner, Peripheral, UUID, BTLEException, DefaultDelegate
 
 scanner = Scanner()
 print("Scanning for 8 seconds...")
@@ -41,6 +41,27 @@ try:
     value = cccd.read()
     n = int.from_bytes(value, "little")
     print(f"CCCD value: 0x{n:04x}")      # prints 0x0002
+
+    # After the CCCD write, add a delegate class (subclass of DefaultDelegate) with handleNotification(self, cHandle, data).
+    class MyDelegate(DefaultDelegate):
+        def handleNotification(self, cHandle, data):
+            print(f"Notification from handle 0x{cHandle:04x}: {data}")
+    
+    # Attach it with peripheral.withDelegate(...).
+    peripheral.withDelegate(MyDelegate())
+
+    # Loop on peripheral.waitForNotifications(timeout) and print each data along with a timestamp. Stop on Ctrl+C or after a set number of values,
+    # then disconnect in a finally.
+    try:
+        print("Waiting for notifications...")
+        while True:
+            if peripheral.waitForNotifications(1.0):
+                # handleNotification() was called
+                continue
+            print("Waiting...")
+    except KeyboardInterrupt:
+        print("Stopped by user.")
+
 
 finally:
     # Disconnect in a finally.
