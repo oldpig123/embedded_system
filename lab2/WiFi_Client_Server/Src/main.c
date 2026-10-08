@@ -25,12 +25,14 @@
 /* Private defines -----------------------------------------------------------*/
 
 #define TERMINAL_USE
+#define SIGMOT_THRESHOLD 0x0c
+#define SIGMOT_DEBOUNCE 0x02
 
 /* Update SSID and PASSWORD with own Access point settings */
-#define SSID     "XXX"
-#define PASSWORD "XXX"
+#define SSID     "xxx"
+#define PASSWORD "xxx"
 
-uint8_t RemoteIP[] = {192,168,00,XXX}; // 192.168.50.180
+uint8_t RemoteIP[] = {192,168,0,0}; 
 #define RemotePORT	8002
 
 #define WIFI_WRITE_TIMEOUT 10000
@@ -49,6 +51,7 @@ uint8_t RemoteIP[] = {192,168,00,XXX}; // 192.168.50.180
 extern UART_HandleTypeDef hDiscoUart;
 #endif /* TERMINAL_USE */
 static uint8_t RxData [500];
+static volatile uint8_t motion_flag = 0;
 
 
 /* Private function prototypes -----------------------------------------------*/
@@ -63,7 +66,7 @@ static uint8_t RxData [500];
 #endif /* TERMINAL_USE */
 
 static void SystemClock_Config(void);
-
+static void MotionInt_Init(void);
 
 
 extern  SPI_HandleTypeDef hspi;
@@ -114,7 +117,7 @@ int main(void)
 
   if (BSP_ACCELERO_Init() != ACCELERO_OK) { BSP_LED_On(LED2); TERMOUT("> ERROR : Cannot initialize Accelerometer\n"); }
   if (BSP_GYRO_Init()     != GYRO_OK)     { BSP_LED_On(LED2); TERMOUT("> ERROR : Cannot initialize Gyroscope\n"); }
-
+  MotionInt_Init();
 
   TERMOUT("****** WIFI Module in TCP Client mode demonstration ****** \n\n");
   TERMOUT("TCP Client Instructions :\n");
@@ -199,9 +202,17 @@ int main(void)
 
   while(1)
   {
+    
     if(Socket != -1)
     {
-
+      if (motion_flag == 1)
+    {
+      motion_flag = 0;
+      (void)SENSOR_IO_Read(LSM6DSL_ACC_GYRO_I2C_ADDRESS_LOW, LSM6DSL_ACC_GYRO_FUNC_SRC);
+      TERMOUT("> Motion detected!\n");
+      WIFI_SendData(Socket, (uint8_t*)"EVENT,SIGMOT\n", strlen("EVENT,SIGMOT\n"), &Datalen, WIFI_WRITE_TIMEOUT);
+    }
+    
       BSP_ACCELERO_AccGetXYZ(acc);
       BSP_GYRO_GetXYZ(gyro);
       snprintf(buffer, sizeof(buffer), "%d,%d,%d,%ld,%ld,%ld\n", acc[0], acc[1], acc[2], (int32_t)gyro[0], (int32_t)gyro[1], (int32_t)gyro[2]);
@@ -211,7 +222,7 @@ int main(void)
             TERMOUT("> ERROR : Failed to Send Data, connection closed\n");
             break;
           }
-      HAL_Delay(10);
+      HAL_Delay(20);
 
           
     }
@@ -275,6 +286,52 @@ static void SystemClock_Config(void)
   }
 }
 
+static void MotionInt_Init(void){
+  
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  /* Enable GPIO used as interrupt */
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+
+  /* Configure GPIO PIN for Accelerometer Interrupt */
+  GPIO_InitStruct.Pin = GPIO_PIN_11;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  SENSOR_IO_Write(LSM6DSL_ACC_GYRO_I2C_ADDRESS_LOW, LSM6DSL_ACC_GYRO_FUNC_CFG_ACCESS, 0x80);
+  // Read LSM6DSL_ACC_GYRO_PEDO_DEB_REG in the Bank A section and print it
+  uint8_t pedo_deb_reg = SENSOR_IO_Read(LSM6DSL_ACC_GYRO_I2C_ADDRESS_LOW, LSM6DSL_ACC_GYRO_PEDO_DEB_REG);
+  TERMOUT("PEDO_DEB_REG: %02X\r\n", pedo_deb_reg);
+
+  SENSOR_IO_Write(LSM6DSL_ACC_GYRO_I2C_ADDRESS_LOW, LSM6DSL_ACC_GYRO_SM_STEP_THS, SIGMOT_THRESHOLD);
+  
+  uint8_t readback = SENSOR_IO_Read(LSM6DSL_ACC_GYRO_I2C_ADDRESS_LOW, LSM6DSL_ACC_GYRO_SM_STEP_THS);
+  // Print the readback value
+  TERMOUT("Read back value: %02X\r\n", readback);
+  // Change only the low three bits (v &= ~0x07; v |= <steps>;), write it, read it back, and print it. Then restore FUNC_CFG_ACCESS = 0x00.
+  uint8_t v = SENSOR_IO_Read(LSM6DSL_ACC_GYRO_I2C_ADDRESS_LOW, LSM6DSL_ACC_GYRO_PEDO_DEB_REG);
+  v &= ~0x07;
+  v |= SIGMOT_DEBOUNCE;
+  SENSOR_IO_Write(LSM6DSL_ACC_GYRO_I2C_ADDRESS_LOW, LSM6DSL_ACC_GYRO_PEDO_DEB_REG, v);
+  readback = SENSOR_IO_Read(LSM6DSL_ACC_GYRO_I2C_ADDRESS_LOW, LSM6DSL_ACC_GYRO_PEDO_DEB_REG);
+  TERMOUT("Read back value after change: %02X\r\n", readback);
+  SENSOR_IO_Write(LSM6DSL_ACC_GYRO_I2C_ADDRESS_LOW, LSM6DSL_ACC_GYRO_FUNC_CFG_ACCESS, 0x00);
+
+
+  v = SENSOR_IO_Read(LSM6DSL_ACC_GYRO_I2C_ADDRESS_LOW, LSM6DSL_ACC_GYRO_CTRL10_C);
+  v |= 0x05; // Enable embedded functions and significant-motion algorithm
+  SENSOR_IO_Write(LSM6DSL_ACC_GYRO_I2C_ADDRESS_LOW, LSM6DSL_ACC_GYRO_CTRL10_C, v);
+
+  v = SENSOR_IO_Read(LSM6DSL_ACC_GYRO_I2C_ADDRESS_LOW, LSM6DSL_ACC_GYRO_INT1_CTRL );
+  v |= 0x40; // Route significant motion to INT1
+  SENSOR_IO_Write(LSM6DSL_ACC_GYRO_I2C_ADDRESS_LOW, LSM6DSL_ACC_GYRO_INT1_CTRL , v);
+
+  /* Enable and set Accelerometer EXTI Interrupt to the lowest priority */
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0x0F, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+}
+
 #if defined (TERMINAL_USE)
 /**
   * @brief  Retargets the C library TERMOUT function to the USART.
@@ -323,6 +380,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
     case (GPIO_PIN_1):
     {
       SPI_WIFI_ISR();
+      break;
+    }
+    case (GPIO_PIN_11):
+    {
+      motion_flag = 1;
       break;
     }
     default:

@@ -12,6 +12,7 @@ index.
 | Lab | Topic | Report |
 | --- | --- | --- |
 | [`lab1/`](lab1/) | FreeRTOS task synchronisation — two tasks sharing one LED under a mutex, plus button long-press detection via a message queue | [report.pdf](lab1/report/report.pdf) |
+| [`lab2/`](lab2/) | Wi-Fi sensor streaming — LSM6DSL accelerometer and gyroscope sent over TCP (ES-WiFi) to a Python live plot; optional: significant-motion interrupt forwarded to the host | [README](lab2/README.md) |
 | [`lab3/`](lab3/) | BLE central in Python (`bluepy`) on a Raspberry Pi, writing a CCCD on a GATT server; optional: building GATTLIB in C | [report.pdf](lab3/report/report.pdf) |
 
 ## Building
@@ -24,6 +25,21 @@ cmake --build --preset Debug
 
 Output is `build/<preset>/<lab>.elf`. Flash with STM32CubeProgrammer, or open
 the project in STM32CubeIDE and run from there.
+
+### lab2 (Wi-Fi)
+
+The firmware is the STM32CubeL4 `WiFi_Client_Server` example converted to CMake.
+Set `SSID`, `PASSWORD` and `RemoteIP[]` in `lab2/WiFi_Client_Server/Src/main.c`
+(they are placeholders in the repo), build as above from `lab2/WiFi_Client_Server`,
+then start the host before resetting the board:
+
+```sh
+cd lab2/host
+uv run visualize.py           # listens on port 8002
+```
+
+See [`lab2/README.md`](lab2/README.md) for the wire format and the
+significant-motion setup.
 
 ### lab3 (BLE, no STM32 build)
 
